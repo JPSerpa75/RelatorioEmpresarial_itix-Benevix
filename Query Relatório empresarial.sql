@@ -13,7 +13,7 @@ select distinct
 			, to_char(cp.dt_contrato_produto_data_vigencia_inicio, 'dd/MM/yyyy') "Início de vigência do plano"
 			, to_char(cp.dt_contrato_produto_data_vigencia_fim, 'dd/MM/yyyy') "Fim de vigência do plano"
 --			, cc.id_contrato_cliente
---			, cp.id_contrato_produto
+			, cp.id_contrato_produto
 			, case when cp.dt_contrato_produto_data_vigencia_fim is null or cp.dt_contrato_produto_data_vigencia_fim::date >= now()::date is null then 'Ativa' else 'Inativa' end "Situação cadastral"
 			, to_char(cp.dt_contrato_produto_base_reajuste, 'MM') "Mês de reajuste"
 			, ce.id_cliente_empresa
@@ -33,6 +33,9 @@ where		true
 and 		$X{IN, dcp.id_produto, Produtos}
 and 		$X{IN, dco.id_operadora, Operadoras}
 and 		$X{IN, dcec.id_entidade_classe, Entidades}
+and			$X{IN, dcb.id_beneficio, Beneficios}
+and			DATE(case $P{Tipo_de_Vigência} when 2 then cp.dt_contrato_produto_data_vigencia_fim else cp.dt_contrato_produto_data_vigencia_inicio end) between  $P{Data_Início} and $P{Data_Final}
+and 		case $P{Situação} when 2 then cp.dt_contrato_produto_data_vigencia_fim is not null and cp.dt_contrato_produto_data_vigencia_fim < now() else cp.dt_contrato_produto_data_vigencia_fim is null or cp.dt_contrato_produto_data_vigencia_fim >= now() end 
 )
 
 , cte_contato_cliente_empresa as (
@@ -89,6 +92,9 @@ and 		(
 and 		$X{IN, cp.id_produto, Produtos}
 and 		$X{IN, cp.id_operadora, Operadoras}
 and 		$X{IN, cc.id_entidade, Entidades}
+and 		$X{IN, cp.id_tipo_beneficio, Beneficios}
+and			DATE(case $P{Tipo_de_Vigência} when 2 then vfp.dt_vida_familia_produto_data_vigencia_fim else vfp.dt_vida_familia_produto_data_vigencia_inicio end) between  $P{Data_Início} and $P{Data_Final}
+and 		case $P{Situação} when 2 then vfp.dt_vida_familia_produto_data_vigencia_fim is not null and vfp.dt_vida_familia_produto_data_vigencia_fim < now() else vfp.dt_vida_familia_produto_data_vigencia_fim is null or vfp.dt_vida_familia_produto_data_vigencia_fim >= now() end 
 order by	f.id_familia
 			, cp.id_produto
 			, cp.id_acomodacao
@@ -117,6 +123,7 @@ select distinct on (tda.id_familia, dcp.id_produto)
 			, to_char(tda.dt_contrato_produto_base_reajuste, 'MM') "Mês de reajuste"
 			, tda.id_familia
 			, rff.id_responsavel_financeiro
+			, ce.id_cliente_empresa
 from		cte_titular_demitido_aposentado tda
 inner join	cliente_empresa ce 					on	ce.id_cliente_empresa = tda.id_cliente_empresa 
 inner join 	dms_cadbase_entidade_classe dcec	on	dcec.id_entidade_classe = tda.id_entidade 
@@ -131,6 +138,33 @@ order by 	tda.id_familia
 			, dcp.id_produto
 			, rff.dt_vigencia_fim desc nulls first
 			, rff.dt_vigencia_inicio desc
+)
+
+, cte_titular_ativo as (
+select 
+		ce.id_cliente_empresa,
+		vfp.id_contrato_produto,
+		count(distinct f.id_familia) as "Quantidade de Funcionários Ativos"
+from		familia f
+inner join	vida_familia vf				on	vf.id_familia = f.id_familia and vf.id_parentesco = 1
+inner join	pessoa p 					on	p.id_pessoa = vf.id_pessoa
+inner join	vida_familia_produto vfp	on	vfp.id_vida_familia = vf.id_vida_familia
+inner join 	cte_cliente_empresa  ce		on	ce.id_cliente_empresa = f.id_cliente_empresa and ce.id_contrato_produto = vfp.id_contrato_produto 
+where vfp.dt_vida_familia_produto_data_vigencia_fim is null or vfp.dt_vida_familia_produto_data_vigencia_fim >= now()  
+group by vfp.id_contrato_produto, ce.id_cliente_empresa
+)
+, cte_titular_cancelado as (
+select 
+		ce.id_cliente_empresa,
+		vfp.id_contrato_produto, 
+		count(distinct f.id_familia) as "Quantidade de Funcionários Cancelados"
+from		familia f
+inner join	vida_familia vf				on	vf.id_familia = f.id_familia and vf.id_parentesco = 1
+inner join	pessoa p 					on	p.id_pessoa = vf.id_pessoa
+inner join	vida_familia_produto vfp	on	vfp.id_vida_familia = vf.id_vida_familia
+inner join 	cte_cliente_empresa  ce		on	ce.id_cliente_empresa = f.id_cliente_empresa and ce.id_contrato_produto = vfp.id_contrato_produto 
+where vfp.dt_vida_familia_produto_data_vigencia_fim is not null and vfp.dt_vida_familia_produto_data_vigencia_fim < now()
+group by vfp.id_contrato_produto, ce.id_cliente_empresa
 )
 
 , cte_contato_responsavel_financeiro_pessoa as (
@@ -230,7 +264,11 @@ select distinct
 			, ce."Fim de vigência do plano"
 			, ce."Situação cadastral"
 			, ce."Mês de reajuste"
+			, ta."Quantidade de Funcionários Ativos"
+			, tc."Quantidade de Funcionários Cancelados"
 from		cte_cliente_empresa ce
+left join  	cte_titular_ativo	ta				on 	ta.id_contrato_produto = ce.id_contrato_produto
+left join  	cte_titular_cancelado	tc			on 	tc.id_contrato_produto = ce.id_contrato_produto
 left join	cte_contato_cliente_empresa cce1	on	cce1.id_cliente_empresa = ce.id_cliente_empresa and cce1.cd_cliente_empresa_contato_tipo_registro = 'COBRANCA'
 left join	cte_contato_cliente_empresa cce2	on	cce2.id_cliente_empresa = ce.id_cliente_empresa and cce2.cd_cliente_empresa_contato_tipo_registro = 'CONTATO_PRINCIPAL'
 left join	cte_contato_cliente_empresa cce3	on	cce3.id_cliente_empresa = ce.id_cliente_empresa and cce3.cd_cliente_empresa_contato_tipo_registro = 'CONTATO_SECUNDARIO'		
@@ -256,6 +294,8 @@ select distinct
 			, da."Fim de vigência do plano"
 			, da."Situação cadastral"
 			, da."Mês de reajuste"
+			, case when da."Situação cadastral" = 'Ativo' then 1 end "Quantidade de Funcionários Ativos"
+			, case when da."Situação cadastral" = 'Inativo' then 1 end "Quantidade de Funcionários Cancelados"
 from 		cte_demitido_aposentado da
 left join	cte_contato_responsavel_financeiro_pessoa crfp1				on	crfp1.id_familia = da.id_familia and crfp1.contato_tipo_registro = 'COBRANCA'
 left join	cte_contato_responsavel_financeiro_pessoa crfp2				on	crfp2.id_familia = da.id_familia and crfp2.contato_tipo_registro = 'CONTATO_PRINCIPAL'
